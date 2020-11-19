@@ -22,14 +22,20 @@ def saml(argv=None, prompter=getpass.getpass, client_creator=None,
         )
     )
     parser.add_argument(
-        '-u', '--username', required=True,
+        '-u', '--username', default=None,
         help='Your SAML username.'
     )
     parser.add_argument(
-        '-p', '--provider', required=True, choices=['okta', 'adfs'],
+        '-p', '--provider', required=True, choices=['okta', 'adfs', 'adfs-negotiate'],
         help=(
             'The name of your SAML provider. Currently okta and adfs '
-            'form-based auth is supported.'
+            'form-based auth, and adfs negotiate-based auth is supported.'
+        )
+    )
+    parser.add_argument(
+        '-t', '--provider-type', default='form', choices=['form', 'negotiate'],
+        help=(
+            'The type of your SAML provider. form-based auth requires a username'
         )
     )
     parser.add_argument(
@@ -71,7 +77,7 @@ def saml(argv=None, prompter=getpass.getpass, client_creator=None,
         provider_name=args.provider,
         saml_config={
             'saml_endpoint': args.endpoint,
-            'saml_authentication_type': 'form',
+            'saml_authentication_type': args.provider_type,
             'saml_username': args.username,
             'role_arn': args.role_arn
         },

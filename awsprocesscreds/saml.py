@@ -8,6 +8,7 @@ from copy import deepcopy
 
 import six
 import requests
+from requests_negotiate_sspi import HttpNegotiateAuth
 import botocore
 from botocore.client import Config
 from botocore.compat import urlsplit
@@ -143,7 +144,7 @@ class GenericFormsBasedAuthenticator(SAMLAuthenticator):
 
     def _validate_config_values(self, config):
         for required in ['saml_endpoint', 'saml_username']:
-            if required not in config:
+            if config.get(required) is None:
                 raise SAMLError(self._ERROR_MISSING_CONFIG % required)
 
     def _retrieve_login_form_from_endpoint(self, endpoint):
@@ -305,10 +306,62 @@ class FormParser(six.moves.html_parser.HTMLParser):
         raise FormParserError(message)
 
 
+class ADFSNegotiateBasedAuthenticator(GenericFormsBasedAuthenticator):
+    def __init__(self, password_prompter, requests_session=None):
+        """Retrieve SAML assertion using negotiate-based auth.
+
+        This class can retrieve a SAML assertion by using negotiate
+        based auth, based on https://aws.amazon.com/blogs/security/how-to-implement-federated-api-and-cli-access-using-saml-2-0-and-ad-fs/.
+        The supported workflow is:
+
+            * Make a GET request to ``saml_endpoint`` using Negotiate authentication
+            * Parse the HTML returned from the service and
+              extract out the SAMLAssertion.
+
+        :param password_prompter: A function that takes a prompt string and
+            returns a password string. (Unused!)
+
+        :param requests_session: A requests session object used to make
+            requests to the saml provider.
+        """
+        if requests_session is None:
+            requests_session = requests.Session()
+        self._requests_session = requests_session
+        self._password_prompter = password_prompter
+
+    def is_suitable(self, config):
+        return (config.get('saml_authentication_type') == 'negotiate' and
+                config.get('saml_provider') == 'adfs-negotiate')
+
+    def retrieve_saml_assertion(self, config):
+        assert self.is_suitable(config)
+        self._validate_config_values(config)
+        self._requests_session.auth = HttpNegotiateAuth(username=config.get('saml_username'))
+        # Use old-old User Agent to bypass form-based authentication defaults on ADFS 3 onwards
+        # See https://github.com/aws/aws-sdk-net/blob/944e467656e6436dd616aec7605f0f05798c88ba/sdk/src/Services/SecurityToken/Custom/_bcl%2Bnetstandard/SAML/ADFSAuthenticationHandlers.cs#L90
+        user_agent = 'Mozilla/5.0 (compatible; MSIE 10.0; Windows NT 6.2; WOW64; Trident/6.0)'
+        self._requests_session.headers.update({'User-Agent': user_agent})
+
+        response = self._requests_session.get(config['saml_endpoint'], verify=True)
+        self._assert_non_error_response(response)
+        # TODO: This may raise SAMLError(self._ERROR_LOGIN_FAILED). We could prompt
+        # for a password here and try again.
+        return self._extract_saml_assertion_from_response(response.text)
+
+    def _validate_config_values(self, config):
+        for required in ['saml_endpoint']:
+            if config.get(required) is None:
+                raise SAMLError(self._ERROR_MISSING_CONFIG % required)
+
+
 class SAMLCredentialFetcher(CachedCredentialFetcher):
     SAML_FORM_AUTHENTICATORS = {
         'okta': OktaAuthenticator,
         'adfs': ADFSFormsBasedAuthenticator
+
+    }
+    SAML_SSO_AUTHENTICATORS = {
+        'adfs-negotiate': ADFSNegotiateBasedAuthenticator
 
     }
 
@@ -321,7 +374,7 @@ class SAMLCredentialFetcher(CachedCredentialFetcher):
         self._role_selector = role_selector
         self._config = saml_config
         self._provider_name = provider_name
-        authenticator_cls = self.SAML_FORM_AUTHENTICATORS.get(provider_name)
+        authenticator_cls = self.SAML_FORM_AUTHENTICATORS.get(provider_name) or self.SAML_SSO_AUTHENTICATORS.get(provider_name)
         if authenticator_cls is None:
             raise ValueError('Unsupported SAML provider: %s' % provider_name)
         self._authenticator = authenticator_cls(password_prompter)

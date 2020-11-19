@@ -24,7 +24,8 @@ def find_version(*file_paths):
 install_requires = [
     'botocore>=1.8.1,<2.0.0',
     'six>=1.8.0,<2.0.0',
-    'requests>=2.7.0,<3.0.0'
+    'requests>=2.7.0,<3.0.0',
+    'requests_negotiate_sspi'
 ]
 
 setup(
